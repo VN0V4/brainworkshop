@@ -1,0 +1,4 @@
+#!/usr/bin/env nix-shell
+#! nix-shell shell.nix -i bash
+# Launch Brain Workshop with the dependencies from shell.nix.
+exec python3 "$(dirname "$(readlink -f "$0")")/brainworkshop.py" "$@"

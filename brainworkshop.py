@@ -279,7 +279,8 @@ JAEGGI_FORCE_OPTIONS_ADDITIONAL = True
 # Only for dual n-back. Automatically disabled in JAEGGI_MODE.
 ENABLE_MOUSE = True
 
-# Background color: True = black, False = white.
+# Background color: True = black (dark mode), False = white.
+# Can also be toggled by pressing B on the title or main screen.
 # Default: False
 BLACK_BACKGROUND = False
 
@@ -488,6 +489,11 @@ USE_MUSIC = True
 USE_APPLAUSE = True
 MUSIC_VOLUME = 1.0
 SFX_VOLUME = 1.0
+
+# Play a sound when you get something wrong (wrong key press, missed match
+# or wrong arithmetic answer)? Only used when SHOW_FEEDBACK is True.
+# Default: True
+USE_WRONG_SOUND = True
 
 # Specify an alternate stats file.
 # Default: stats.txt
@@ -863,6 +869,9 @@ if not cfg.USE_SESSION_FEEDBACK:
 
 if cfg.BLACK_BACKGROUND:
     cfg.COLOR_TEXT = cfg.COLOR_TEXT_BLK
+    COLOR_HIGHLIGHT = (110, 140, 255, 255) # lighter blue, readable on black
+else:
+    COLOR_HIGHLIGHT = (32, 32, 255, 255)
 def get_threshold_advance():
     if cfg.JAEGGI_SCORING:
         return cfg.JAEGGI_ADVANCE
@@ -1005,6 +1014,19 @@ if cfg.USE_APPLAUSE:
     applausesounds = [pyglet.media.load(soundfile, streaming=False)
 
                      for soundfile in resourcepaths['misc']['applause']]
+
+wrongsound = None
+if 'wrong' in resourcepaths['misc']:
+    wrongsound = pyglet.media.load(resourcepaths['misc']['wrong'][0], streaming=False)
+wrongplayers = [] # keep references so players aren't garbage collected mid-sound
+def play_wrong_sound():
+    if wrongsound is None or not (cfg.USE_WRONG_SOUND and cfg.SHOW_FEEDBACK):
+        return
+    player = get_pyglet_media_Player()
+    player.volume = cfg.SFX_VOLUME
+    player.queue(wrongsound)
+    player.play()
+    wrongplayers[:] = [p for p in wrongplayers if p.playing] + [player]
 
 applauseplayer = get_pyglet_media_Player()
 musicplayer    = get_pyglet_media_Player()
@@ -2918,6 +2940,8 @@ class KeysListLabel:
                     _('C: Choose Game Type\n'),
                     _('S: Select Sounds\n')])
             str_list.append(_('I: Select Images\n'))
+            if can_toggle_dark_mode():
+                str_list.append(_('B: Dark / Light Mode\n'))
             if mode.manual:
                 str_list.append(_('M: Standard Mode\n'))
             else:
@@ -2965,6 +2989,8 @@ class TitleKeysLabel:
             str_list.append(_('D: Donate\n'))
             str_list.append(_('F: Go to Forum / Mailing List\n'))
             str_list.append(_('O: Edit configuration file'))
+        if can_toggle_dark_mode():
+            str_list.append(_('\nB: Dark / Light Mode'))
 
         self.keys = pyglet.text.Label(
             ''.join(str_list),
@@ -2975,7 +3001,7 @@ class TitleKeysLabel:
 
         self.space = pyglet.text.Label(
             _('Press SPACE to enter the Workshop'),
-            font_size=calc_fontsize(20), weight='bold', color = (32, 32, 255, 255),
+            font_size=calc_fontsize(20), weight='bold', color = COLOR_HIGHLIGHT,
             x = width_center(), y = from_bottom_edge(35),
             anchor_x = 'center', anchor_y = 'center')
     def draw(self):
@@ -3013,7 +3039,7 @@ class PausedLabel:
         self.label = pyglet.text.Label(
             '',
             font_size=calc_fontsize(14),
-            color=(64, 64, 255, 255),
+            color=COLOR_HIGHLIGHT,
             x=field.center_x, y=field.center_y,
             anchor_x='center', anchor_y='center', batch=batch)
         self.update()
@@ -3284,7 +3310,7 @@ class SpaceLabel:
             '',
             font_size=calc_fontsize(16),
             weight='bold',
-            color=(32, 32, 255, 255),
+            color=COLOR_HIGHLIGHT,
             x=width_center(), y=from_bottom_edge(62),
             anchor_x='center', anchor_y='center', batch=batch)
         self.update()
@@ -4467,6 +4493,26 @@ def get_users():
 # --- BEGIN EVENT LOOP SECTION ----------------------------------------------
 #
 
+# Jaeggi and clinical modes force their own background color.
+def can_toggle_dark_mode():
+    return not (CLINICAL_MODE or cfg.JAEGGI_MODE or cfg.JAEGGI_INTERFACE_DEFAULT_SCORING)
+
+# Colors are applied when everything is created, so save the setting and restart.
+def toggle_dark_mode():
+    path = os.path.join(get_data_dir(), CONFIGFILE)
+    with open(path) as f:
+        lines = f.read().splitlines()
+    setting = 'BLACK_BACKGROUND = %s' % (not cfg.BLACK_BACKGROUND)
+    for i, line in enumerate(lines):
+        if line.replace(' ', '').startswith('BLACK_BACKGROUND='):
+            lines[i] = setting
+            break
+    else:
+        lines.append(setting)
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 # this is where the keyboard keys are defined.
 @window.event
 def on_mouse_press(x, y, button, modifiers):
@@ -4478,10 +4524,15 @@ def on_mouse_press(x, y, button, modifiers):
                     Flag = False
             if Flag:
                 if (button == pyglet.window.mouse.LEFT):
-                    mode.inputs[mode.modalities[mode.mode][0]] = True
+                    register_input(mode.modalities[mode.mode][0])
                 elif (button == pyglet.window.mouse.RIGHT):
-                    mode.inputs[mode.modalities[mode.mode][1]] = True
+                    register_input(mode.modalities[mode.mode][1])
                 update_input_labels()
+
+def register_input(modality):
+    if not mode.inputs[modality] and check_match(modality) == 'incorrect':
+        play_wrong_sound()
+    mode.inputs[modality] = True
 
 @window.event
 def on_key_press(symbol, modifiers):
@@ -4532,6 +4583,9 @@ def on_key_press(symbol, modifiers):
 
         elif symbol == key.O:
             edit_config_ini()
+
+        elif symbol == key.B and can_toggle_dark_mode():
+            toggle_dark_mode()
 
     elif mode.draw_graph:
         if symbol == key.ESCAPE or symbol == key.G or symbol == key.X:
@@ -4658,6 +4712,9 @@ def on_key_press(symbol, modifiers):
         elif symbol == key.D and not CLINICAL_MODE:
             webbrowser.open_new_tab(WEB_DONATE)
 
+        elif symbol == key.B and can_toggle_dark_mode():
+            toggle_dark_mode()
+
         elif symbol == key.J and 'morse' in cfg.AUDIO1_SETS or 'morse' in cfg.AUDIO2_SETS:
             webbrowser.open_new_tab(WEB_MORSE)
 
@@ -4710,7 +4767,7 @@ def on_key_press(symbol, modifiers):
                 if not k == 'arithmetic':
                     keycode = cfg['KEY_%s' % k.upper()]
                     if symbol == keycode:
-                        mode.inputs[k] = True
+                        register_input(k)
                         mode.input_rts[k] = time.time() - mode.trial_starttime
                         update_input_labels()
 
@@ -4775,9 +4832,21 @@ def update(dt):
             mode.tick = 0
             mode.show_missed = True
             update_input_labels()
+            check_missed_answers()
         if mode.tick == mode.ticks_per_trial:
             mode.tick = 0
 pyglet.clock.schedule_interval(update, TICK_DURATION)
+
+# at the end of each trial, play the wrong sound for missed matches or a wrong arithmetic answer
+def check_missed_answers():
+    for k in mode.modalities[mode.mode]:
+        if k == 'arithmetic':
+            wrong = check_match(k) == 'incorrect'
+        else:
+            wrong = not mode.inputs[k] and check_match(k, check_missed=True) == 'missed'
+        if wrong:
+            play_wrong_sound()
+            return
 
 angle = 0
 def pulsate(dt):
