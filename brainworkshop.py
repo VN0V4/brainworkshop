@@ -3797,27 +3797,13 @@ class Stats:
                 statsfile = open(statsfile_path, 'r')
                 is_today = False
                 is_thours = False
-                today = date.today()
-                yesterday = date.fromordinal(today.toordinal() - 1)
-                tomorrow = date.fromordinal(today.toordinal() + 1)
                 for line in statsfile:
                     if line == '': continue
                     if line == '\n': continue
                     if line[0] not in '0123456789': continue
-                    datestamp = date(int(line[:4]), int(line[5:7]), int(line[8:10]))
-                    hour = int(line[11:13])
-                    mins = int(line[14:16])
-                    sec = int(line[17:19])
-                    thour = datetime.datetime.today().hour
-                    tmin = datetime.datetime.today().minute
-                    tsec = datetime.datetime.today().second
-                    if int(strftime('%H')) < cfg.ROLLOVER_HOUR:
-                        if datestamp == today or (datestamp == yesterday and hour >= cfg.ROLLOVER_HOUR):
-                            is_today = True
-                    elif datestamp == today and hour >= cfg.ROLLOVER_HOUR:
-                        is_today = True
-                    if datestamp == today or (datestamp == yesterday and (hour > thour or (hour == thour and (mins > tmin or (mins == tmin and sec > tsec))))):
-                        is_thours = True
+                    line_today, line_thours = self.time_period(line)
+                    is_today = is_today or line_today
+                    is_thours = is_thours or line_thours
                     if '\t' in line:
                         separator = '\t'
                     else: separator = ','
@@ -3855,6 +3841,59 @@ class Stats:
                                 os.path.join(get_data_dir(), cfg.STATSFILE),
                                 _('\nPlease fix, delete or rename the stats file.'),
                                 quit=False)
+        self.parse_cancelled_time()
+
+    # returns (is_today, is_thours) for a line starting with a "YYYY-MM-DD HH:MM:SS" timestamp
+    def time_period(self, line):
+        today = date.today()
+        yesterday = date.fromordinal(today.toordinal() - 1)
+        datestamp = date(int(line[:4]), int(line[5:7]), int(line[8:10]))
+        hour = int(line[11:13])
+        mins = int(line[14:16])
+        sec = int(line[17:19])
+        thour = datetime.datetime.today().hour
+        tmin = datetime.datetime.today().minute
+        tsec = datetime.datetime.today().second
+        is_today = False
+        if int(strftime('%H')) < cfg.ROLLOVER_HOUR:
+            if datestamp == today or (datestamp == yesterday and hour >= cfg.ROLLOVER_HOUR):
+                is_today = True
+        elif datestamp == today and hour >= cfg.ROLLOVER_HOUR:
+            is_today = True
+        is_thours = datestamp == today or (datestamp == yesterday and (hour > thour or (hour == thour and (mins > tmin or (mins == tmin and sec > tsec)))))
+        return is_today, is_thours
+
+    # Cancelled sessions don't go in the stats file (they'd affect levels and graphs),
+    # but their training time is logged here so it still counts toward time done.
+    def cancelled_time_path(self):
+        return os.path.join(get_data_dir(), os.path.splitext(cfg.STATSFILE)[0] + '-cancelled.txt')
+
+    def parse_cancelled_time(self):
+        path = self.cancelled_time_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path) as f:
+                for line in f:
+                    if not line or line[0] not in '0123456789': continue
+                    is_today, is_thours = self.time_period(line)
+                    sesstime = int(line.split(',')[1])
+                    if is_today:
+                        self.time_today += sesstime
+                    if is_thours:
+                        self.time_thours += sesstime
+        except Exception as e:
+            debug_msg(e)
+
+    def add_session_time(self, sesstime, cancelled):
+        self.time_today += sesstime
+        self.time_thours += sesstime
+        if cancelled and ATTEMPT_TO_SAVE_STATS:
+            try:
+                with open(self.cancelled_time_path(), 'a') as f:
+                    f.write('%s,%i\n' % (strftime("%Y-%m-%d %H:%M:%S"), sesstime))
+            except Exception as e:
+                debug_msg(e)
 
     def retrieve_progress(self):
         if cfg.RESET_LEVEL:
@@ -4129,10 +4168,16 @@ def end_session(cancelled=False):
         label.delete()
     while input_labels:
         input_labels.remove(input_labels[0])
+    trial_duration = mode.ticks_per_trial * TICK_DURATION
     if cancelled:
         mode.session_number -= 1
+        completed_trials = max(0, mode.trial_number - 1) # the current trial wasn't finished
+        if completed_trials:
+            stats.add_session_time(int(round(trial_duration * completed_trials)), cancelled=True)
     if not cancelled:
         stats.sessions_today += 1
+        stats.sessions_thours += 1
+        stats.add_session_time(int(round(trial_duration * mode.num_trials_total)), cancelled=False)
     for visual in visuals: visual.hide()
     mode.started = False
     mode.paused = False
